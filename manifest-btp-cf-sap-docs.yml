@@ -13,6 +13,11 @@ applications:
       NODE_ENV: production
       MCP_VARIANT: sap-docs
       MCP_HOST: 0.0.0.0
+      # Public deployment behind the platform router: accept its public Host
+      # names and browser origins (DNS-rebinding checks are for local servers).
+      # Narrow these to your route(s), see SECURITY-HARDENING.md.
+      MCP_ALLOWED_HOSTS: "*"
+      MCP_ALLOWED_ORIGINS: "*"
       MCP_PRELOAD_EMBEDDINGS: "true"
       LOG_FORMAT: json
       LOG_LEVEL: INFO

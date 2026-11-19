@@ -16,6 +16,8 @@ import { prefetchReleasedObjects } from "./lib/sapReleasedObjects/index.js";
 import { prefetchUi5LibDiff } from "./lib/ui5LibDiff/index.js";
 import { loadEmbeddingModel } from "./lib/embeddingSearch.js";
 import { sanitizeExternalText, wrapText } from "./lib/untrustedContent.js";
+import { applyCorsHeaders, checkRequestHeaders, loadHttpSecurityConfig, readBodyLimited } from "./lib/httpSecurity.js";
+import { INPUT_LIMITS } from "./lib/inputLimits.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -139,11 +141,13 @@ function json(res: any, code: number, payload: unknown) {
 }
 
 // ---- server -----------------------------------------------------------------
+const httpSecurity = loadHttpSecurityConfig(process.env, "127.0.0.1");
+
 const server = createServer(async (req, res) => {
-  // CORS (you can tighten later if needed)
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  // DNS-rebinding protection (Host/Origin allow-lists) and restrictive CORS.
+  const check = checkRequestHeaders(req.headers, httpSecurity);
+  if (!check.ok) return json(res, check.status, { error: check.message });
+  applyCorsHeaders(req, res, httpSecurity, "GET, POST, OPTIONS");
   if (req.method === "OPTIONS") return json(res, 200, { ok: true });
 
   // healthz/readyz: cheap checks for PM2/K8s or manual curl
@@ -284,9 +288,13 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && req.url === "/mcp") {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk.toString()));
-    req.on("end", async () => {
+    let body: string;
+    try {
+      body = await readBodyLimited(req, httpSecurity.maxBodyBytes);
+    } catch (error: any) {
+      return json(res, error?.status === 413 ? 413 : 400, { error: error?.status === 413 ? "Request body too large" : "Invalid request body" });
+    }
+    {
       let parsed: unknown;
       try {
         parsed = JSON.parse(body);
@@ -302,6 +310,9 @@ const server = createServer(async (req, res) => {
       if (typeof mcpRequest.content !== "string" || mcpRequest.content.trim().length === 0) {
         return json(res, 400, { error: "Missing 'content' field in request body" });
       }
+      if (mcpRequest.content.length > INPUT_LIMITS.query) {
+        return json(res, 400, { error: `'content' is too long (max ${INPUT_LIMITS.query} characters)` });
+      }
 
       let options: UnifiedSearchOptions;
       try {
@@ -314,12 +325,11 @@ const server = createServer(async (req, res) => {
       const response = await handleMCPRequest(mcpRequest.content, options);
       // The summary embeds third-party documentation text: sanitise and fence it.
       return json(res, 200, { ...response, content: wrapText(String(response.content ?? "")) });
-    });
-    return;
+    }
   }
 
   // default 404 JSON (keeps curl|jq friendly)
-  return json(res, 404, { error: "Not Found", path: req.url, method: req.method });
+  return json(res, 404, { error: "Not Found" });
 });
 
 // Initialize search system with metadata and start server

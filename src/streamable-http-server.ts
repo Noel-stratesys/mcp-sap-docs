@@ -1,6 +1,5 @@
-import express, { Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
 import { randomUUID } from "node:crypto";
-import cors from "cors";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
@@ -16,6 +15,7 @@ import { CONFIG } from "./lib/config.js";
 import { BoundedEventStore } from "./lib/boundedEventStore.js";
 import { SessionRecord, SessionRegistry } from "./lib/sessionRegistry.js";
 import { startSseKeepAlive } from "./lib/sseKeepAlive.js";
+import { httpSecurityMiddleware, loadHttpSecurityConfig } from "./lib/httpSecurity.js";
 
 const VERSION = "0.3.65"; // x-release-please-version
 const variant = getVariantConfig();
@@ -94,15 +94,23 @@ async function main() {
   const maxEventStreamsPerSession = positiveIntegerEnv("MCP_MAX_EVENT_STREAMS_PER_SESSION", 8);
   const maxEventsPerStream = positiveIntegerEnv("MCP_MAX_EVENTS_PER_STREAM", 16);
   
+  const httpSecurity = loadHttpSecurityConfig(process.env, MCP_HOST);
+
   // Create Express application
   const app = express();
-  app.use(express.json());
-  
-  // Configure CORS to expose Mcp-Session-Id header for browser-based clients
-  app.use(cors({
-    origin: '*', // Allow all origins - adjust as needed for production
-    exposedHeaders: ['Mcp-Session-Id']
-  }));
+  app.disable('x-powered-by');
+
+  // DNS-rebinding protection (Host + Origin allow-lists), restrictive CORS and
+  // preflight handling. See src/lib/httpSecurity.ts / SECURITY-HARDENING.md.
+  // GET /health stays reachable for container/platform probes that use an
+  // internal address as Host; it exposes no documentation content.
+  const securityCheck = httpSecurityMiddleware(httpSecurity);
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.method === 'GET' && req.path === '/health') return next();
+    securityCheck(req, res, next);
+  });
+
+  app.use(express.json({ limit: httpSecurity.maxBodyBytes }));
 
   // Public clients frequently abandon sessions without sending DELETE. Keep the
   // registry bounded so those transports cannot retain MCP Server instances
@@ -352,6 +360,23 @@ async function main() {
     });
   });
 
+  // Body-parser and other errors: answer with JSON, never with a stack trace.
+  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+    const status = typeof err?.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
+    if (status >= 500) {
+      logger.error('Unhandled HTTP error', { error: String(err) });
+    }
+    if (res.headersSent) return;
+    res.status(status).json({
+      jsonrpc: '2.0',
+      error: {
+        code: status === 413 ? -32600 : -32700,
+        message: status === 413 ? 'Request body too large' : status >= 500 ? 'Internal server error' : 'Invalid request body',
+      },
+      id: null,
+    });
+  });
+
   // Bind host is configurable; default remains localhost unless overridden.
   const server = app.listen(MCP_PORT, MCP_HOST, (error?: Error) => {
     if (error) {
@@ -386,6 +411,10 @@ Health check: GET /health
   // Log server startup
   logger.info("MCP SAP Docs Streamable HTTP server starting up", {
     port: MCP_PORT,
+    host: MCP_HOST,
+    allowedHosts: httpSecurity.allowedHosts === '*' ? '*' : [...httpSecurity.allowedHosts],
+    allowedOrigins: httpSecurity.allowedOrigins === '*' ? '*' : [...httpSecurity.allowedOrigins, '(loopback)'],
+    maxBodyBytes: httpSecurity.maxBodyBytes,
     nodeEnv: process.env.NODE_ENV,
     logLevel: process.env.LOG_LEVEL,
     logFormat: process.env.LOG_FORMAT

@@ -59,6 +59,7 @@ import { chooseSourceAwareUrl, extractSourceUrlFromText, readSourceContentSync }
 import { isToolEnabled, getVariantName } from "./variant.js";
 import { searchDiscoveryCenter, getDiscoveryCenterServiceDetails } from "./discoveryCenter/index.js";
 import { protectToolResult, protectResourceResult } from "./untrustedContent.js";
+import { INPUT_LIMITS, validateToolArguments } from "./inputLimits.js";
 
 /**
  * Helper functions for creating structured JSON responses compatible with ChatGPT and all MCP clients
@@ -1194,6 +1195,12 @@ RETURNS (JSON):
       const { name, arguments: args } = request.params;
       const clientMetadata = extractClientMetadata(request);
 
+      const argumentError = validateToolArguments(args);
+      if (argumentError) {
+        logger.warn("Rejected tool call with invalid arguments", { tool: name, error: argumentError });
+        return { ...createErrorResponse(argumentError), isError: true };
+      }
+
       if (name === "search") {
         // Extract all parameters with defaults
         const { 
@@ -2261,6 +2268,9 @@ Please provide more details about your specific issue, and I'll search for relev
   private static async readResource(request: any): Promise<any> {
     {
       const uri = request.params.uri;
+      if (typeof uri !== "string" || uri.length > INPUT_LIMITS.uri) {
+        throw new Error("Invalid resource URI.");
+      }
 
       const docPrefix = "abap-docs://doc/";
       const libraryPrefix = "abap-docs://library/";
