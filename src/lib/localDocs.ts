@@ -21,7 +21,8 @@ import {
 } from "./metadata.js";
 import { generateDocumentationUrl as generateUrl } from "./url-generation/index.js";
 import { getSapHelpDocument } from "./sapHelp.js";
-import { readSourceContentSync } from "./sourceContent.js";
+import { readSourceContentSync, resolveSourceFile } from "./sourceContent.js";
+import { CONFIG } from "./config.js";
 
 /** Result of a document fetch: the text plus how it was affected on the way out. */
 export interface FetchResult {
@@ -1464,7 +1465,7 @@ export async function fetchLibraryDocumentation(
           throw new Error(`Unknown library ID: ${lib.id}`);
         }
         
-        const abs = path.join(PROJECT_ROOT, "sources", sourcePath, doc.relFile);
+        const abs = resolveSourceFile(sourcePath, doc.relFile);
         const content = await fs.readFile(abs, "utf8");
         
         // For JavaScript API files, format the content for better readability
@@ -1512,7 +1513,7 @@ ${content}
             throw new Error(`Unknown library ID: ${lib.id}`);
           }
           
-          const abs = path.join(PROJECT_ROOT, "sources", sourcePath, doc.relFile);
+          const abs = resolveSourceFile(sourcePath, doc.relFile);
           const content = await fs.readFile(abs, "utf8");
           
           // For JavaScript API files, format the content for better readability
@@ -1547,7 +1548,7 @@ ${content}
     }
     
     // Try library-level lookup with base ID
-    const baseLib = index[baseId];
+    const baseLib = Object.hasOwn(index, baseId) ? index[baseId] : undefined;
     if (baseLib) {
       const term = topic.toLowerCase();
       const targets = term
@@ -1562,12 +1563,18 @@ ${content}
 
       const parts: string[] = [];
       for (const doc of targets) {
+        // Library-level fetches concatenate many files; stop once the response is
+        // large enough so a single call cannot read a whole corpus into memory.
+        if (aggregatedLength(parts) >= CONFIG.MAX_CONTENT_LENGTH) {
+          parts.push(`[${targets.length - parts.length} more documents omitted. Fetch a specific document id from search results.]`);
+          break;
+        }
         const sourcePath = getSourcePath(baseLib.id);
         if (!sourcePath) {
           throw new Error(`Unknown library ID: ${baseLib.id}`);
         }
         
-        const abs = path.join(PROJECT_ROOT, "sources", sourcePath, doc.relFile);
+        const abs = resolveSourceFile(sourcePath, doc.relFile);
         const content = await fs.readFile(abs, "utf8");
         
         // For JavaScript API files, format the content for better readability
@@ -1606,7 +1613,7 @@ ${content}
   }
   
   // If not a specific document ID, treat as library ID with optional topic
-  const lib = index[libraryIdOrDocId];
+  const lib = Object.hasOwn(index, libraryIdOrDocId) ? index[libraryIdOrDocId] : undefined;
   if (!lib) return null;
 
   // If topic is provided, first try to construct the full document ID
@@ -1621,7 +1628,7 @@ ${content}
           throw new Error(`Unknown library ID: ${lib.id}`);
         }
         
-        const abs = path.join(PROJECT_ROOT, "sources", sourcePath, doc.relFile);
+        const abs = resolveSourceFile(sourcePath, doc.relFile);
         const content = await fs.readFile(abs, "utf8");
         
         // Format the content appropriately based on library type
@@ -1662,12 +1669,18 @@ ${content}
       // Process the filtered documents
       const parts: string[] = [];
       for (const doc of targets) {
+        // Library-level fetches concatenate many files; stop once the response is
+        // large enough so a single call cannot read a whole corpus into memory.
+        if (aggregatedLength(parts) >= CONFIG.MAX_CONTENT_LENGTH) {
+          parts.push(`[${targets.length - parts.length} more documents omitted. Fetch a specific document id from search results.]`);
+          break;
+        }
         const sourcePath = getSourcePath(lib.id);
         if (!sourcePath) {
           throw new Error(`Unknown library ID: ${lib.id}`);
         }
         
-        const abs = path.join(PROJECT_ROOT, "sources", sourcePath, doc.relFile);
+        const abs = resolveSourceFile(sourcePath, doc.relFile);
         const content = await fs.readFile(abs, "utf8");
         
         if (doc.relFile && doc.relFile.endsWith('.js') && lib.id === '/openui5-api') {
@@ -1708,12 +1721,18 @@ ${content}
 
   const parts: string[] = [];
   for (const doc of targets) {
+    // Library-level fetches concatenate many files; stop once the response is
+    // large enough so a single call cannot read a whole corpus into memory.
+    if (aggregatedLength(parts) >= CONFIG.MAX_CONTENT_LENGTH) {
+      parts.push(`[${targets.length - parts.length} more documents omitted. Fetch a specific document id from search results.]`);
+      break;
+    }
     const sourcePath = getSourcePath(lib.id);
     if (!sourcePath) {
       throw new Error(`Unknown library ID: ${lib.id}`);
     }
     
-    const abs = path.join(PROJECT_ROOT, "sources", sourcePath, doc.relFile);
+    const abs = resolveSourceFile(sourcePath, doc.relFile);
     const content = await fs.readFile(abs, "utf8");
     
     // For JavaScript API files, format the content for better readability
@@ -1748,6 +1767,10 @@ ${content}
     }
   }
   return { text: parts.join("\n\n---\n\n") };
+}
+
+function aggregatedLength(parts: string[]): number {
+  return parts.reduce((total, part) => total + part.length, 0);
 }
 
 // Resource support for MCP
@@ -1839,7 +1862,7 @@ export async function readDocumentationResource(uri: string) {
   const [, libIdPart, encodedFilePath] = match;
   // Library ID should have leading slash
   const libraryId = libIdPart.startsWith('/') ? libIdPart : `/${libIdPart}`;
-  const lib = index[libraryId];
+  const lib = Object.hasOwn(index, libraryId) ? index[libraryId] : undefined;
   if (!lib) {
     throw new Error(`Library not found: ${libraryId}`);
   }
@@ -1882,7 +1905,7 @@ export async function readDocumentationResource(uri: string) {
     throw new Error(`Unknown library ID: ${libraryId}`);
   }
   
-  const absPath = path.join(PROJECT_ROOT, "sources", sourcePath, doc.relFile);
+  const absPath = resolveSourceFile(sourcePath, doc.relFile);
 
   try {
     const content = await fs.readFile(absPath, "utf8");

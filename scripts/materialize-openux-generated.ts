@@ -1,6 +1,7 @@
 import { spawnSync } from "child_process";
 import fs from "fs/promises";
 import path from "path";
+import { assertInsideRoot } from "../src/lib/sourceContent.js";
 
 export type OpenUxGeneratedSource = {
   libraryId: string;
@@ -292,7 +293,7 @@ export async function materializeOpenUxGeneratedSources(options: MaterializeOpti
 
     for (const inputFile of source.inputFiles) {
       const inputPath = path.join(dataLocalDir, inputFile);
-      const raw = await fs.readFile(inputPath, "utf8");
+      const raw = await fs.readFile(assertInsideRoot(inputPath, dataLocalDir), "utf8");
       const chunks = splitChunksWithLineRanges(raw);
       const documentTitle = extractTitle(withoutFencedCode(chunks[0]?.content ?? ""), path.posix.basename(inputFile, ".md"));
 

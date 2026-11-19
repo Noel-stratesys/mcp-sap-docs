@@ -2,7 +2,7 @@ import { createServer } from "http";
 import { readFileSync, statSync, existsSync, readdirSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join, resolve } from "path";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { searchLibraries } from "./lib/localDocs.js";
 import { openDb } from "./lib/searchDb.js";
 import { normalizeUnifiedSearchOptions, search, type UnifiedSearchOptions } from "./lib/search.js";
@@ -34,9 +34,10 @@ const buildTimestamp = new Date().toISOString();
 const variant = getVariantConfig();
 
 // ---- helpers ----------------------------------------------------------------
-function safeExec(cmd: string, cwd?: string) {
+// Runs git without a shell (fixed argument list, no string interpolation).
+function safeGit(args: string[], cwd?: string) {
   try {
-    return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], cwd }).trim();
+    return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], cwd, timeout: 5000 }).trim();
   } catch {
     return "";
   }
@@ -67,7 +68,7 @@ function readGitMeta(repoPath: string) {
       const ref = head.slice(5).trim();
       const refPath = join(gitDir, ref);
       const commit = readFileSync(refPath, "utf8").trim();
-      const date = safeExec(`git log -1 --format="%ci"`, repoPath);
+      const date = safeGit(["log", "-1", "--format=%ci"], repoPath);
       return {
         branch: ref.split("/").pop(),
         commit: commit.substring(0, 7),
@@ -76,7 +77,7 @@ function readGitMeta(repoPath: string) {
       };
     } else {
       // detached
-      const date = safeExec(`git log -1 --format="%ci"`, repoPath);
+      const date = safeGit(["log", "-1", "--format=%ci"], repoPath);
       return {
         commit: head.substring(0, 7),
         fullCommit: head,
@@ -164,7 +165,7 @@ const server = createServer(async (req, res) => {
       gitInfo = readGitMeta(repoPath);
       // normalize to include branch if unknown
       if (!gitInfo.branch) {
-        const branch = safeExec("git rev-parse --abbrev-ref HEAD", repoPath);
+        const branch = safeGit(["rev-parse", "--abbrev-ref", "HEAD"], repoPath);
         if (branch && branch !== "HEAD") gitInfo.branch = branch;
       }
     } catch {

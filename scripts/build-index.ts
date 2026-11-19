@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import path, { join } from "path";
 import matter from "./safe-matter.js";
 import { getAllowedSources, getVariantName } from "../src/lib/variant.js";
+import { assertInsideRoot, isPathInside } from "../src/lib/sourceContent.js";
 import { materializeOpenUxGeneratedSources } from "./materialize-openux-generated.js";
 import { materializeTutorials, TUTORIALS } from "./materialize-tutorials.js";
 import { extractVocabularyTerms } from "./odata-vocabulary-terms.js";
@@ -1101,7 +1102,19 @@ async function main() {
       const excludes = Array.isArray(src.exclude) ? src.exclude : [src.exclude];
       patterns.push(...excludes.map((exclude) => `!${exclude}`));
     }
-    const files = Array.from(new Set(await fg(patterns, { cwd: src.absDir, absolute: true }))).sort();
+    const globbed = Array.from(new Set(await fg(patterns, { cwd: src.absDir, absolute: true }))).sort();
+    // External repositories are untrusted: drop symlinks that resolve outside
+    // sources/ (e.g. docs/x.md -> ~/.ssh/id_rsa) so they are never indexed.
+    const containmentRoot = isPathInside(path.resolve("sources"), path.resolve(src.absDir)) ? "sources" : src.absDir;
+    const files = globbed.filter((absPath) => {
+      try {
+        assertInsideRoot(absPath, containmentRoot);
+        return true;
+      } catch (error: any) {
+        console.warn(`⚠️  Skipping ${absPath}: ${error?.message || error}`);
+        return false;
+      }
+    });
 
     const docs: DocEntry[] = [];
 

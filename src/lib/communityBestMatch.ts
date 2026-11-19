@@ -243,14 +243,17 @@ export async function searchAndGetTopPosts(
 // Batch retrieve multiple posts using LiQL API
 export async function getCommunityPostsByIds(postIds: string[], userAgent?: string): Promise<{ [id: string]: CommunityPostContent }> {
   const results: { [id: string]: CommunityPostContent } = {};
-  
-  if (postIds.length === 0) {
+
+  // Post ids come from tool input (fetch id="community-<id>") and are pasted
+  // into a LiQL query: accept numeric ids only to rule out query injection.
+  const safeIds = postIds.filter((id) => /^\d{1,20}$/.test(id));
+  if (safeIds.length === 0) {
     return results;
   }
 
   try {
     // Build LiQL query for batch retrieval
-    const idList = postIds.map(id => `'${id}'`).join(', ');
+    const idList = safeIds.map(id => `'${id}'`).join(', ');
     const liqlQuery = `
       select body, id, subject, search_snippet, post_time, view_href 
       from messages 

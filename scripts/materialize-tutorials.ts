@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import matter from './safe-matter.js';
+import { assertInsideRoot } from '../src/lib/sourceContent.js';
 
 type TutorialConfig = {
   groups: Record<string, { name: string; keywords: string[]; tutorials: string[] }>;
@@ -61,7 +62,7 @@ export async function materializeTutorials(
     await fs.mkdir(outputDir, { recursive: true });
     for (const id of config.tutorials) {
       // Missing allowlisted inputs fail the build, instead of silently dropping content.
-      const raw = await fs.readFile(path.join(inputRoot, id, `${id}.md`), 'utf8');
+      const raw = await fs.readFile(assertInsideRoot(path.join(inputRoot, id, `${id}.md`), inputRoot), 'utf8');
       const parsed = matter(raw);
       const title = parsed.content.match(/^#\s+(.+)$/m)?.[1].trim() || id;
       const description = parsed.content.match(/<!-- description -->\s*([^\n]+)/)?.[1] || title;

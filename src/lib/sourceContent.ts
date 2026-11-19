@@ -26,6 +26,37 @@ export function getProjectRoot(): string {
   return projectRoot;
 }
 
+/** True when `target` is `root` itself or lies below it. */
+export function isPathInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/**
+ * Resolve symlinks and make sure the real file stays inside `root` (by default
+ * the project's `sources/` directory). External documentation repositories are
+ * untrusted: a symlink such as `docs/x.md -> ~/.ssh/id_rsa` or a `relFile`
+ * with `../` must never make the server read files outside the corpus.
+ * Throws when the path escapes; returns the real path otherwise.
+ */
+export function assertInsideRoot(absPath: string, root: string = path.join(getProjectRoot(), "sources")): string {
+  const lexical = path.resolve(absPath);
+  const realRoot = fs.realpathSync.native(path.resolve(root));
+  if (!isPathInside(path.resolve(root), lexical) && !isPathInside(realRoot, lexical)) {
+    throw new Error(`Refusing to read outside of ${root}: ${absPath}`);
+  }
+  const real = fs.realpathSync.native(lexical);
+  if (!isPathInside(realRoot, real)) {
+    throw new Error(`Refusing to follow a link outside of ${root}: ${absPath}`);
+  }
+  return real;
+}
+
+/** Absolute path of a corpus file, verified to stay inside `sources/`. */
+export function resolveSourceFile(sourcePath: string, relFile: string): string {
+  return assertInsideRoot(path.join(getProjectRoot(), "sources", sourcePath, relFile));
+}
+
 export function readSourceContentSync(libraryId: string, relFile: string): string | null {
   if (!relFile) {
     return null;
@@ -36,9 +67,8 @@ export function readSourceContentSync(libraryId: string, relFile: string): strin
     return null;
   }
 
-  const absPath = path.join(getProjectRoot(), "sources", sourcePath, relFile);
   try {
-    return fs.readFileSync(absPath, "utf8");
+    return fs.readFileSync(resolveSourceFile(sourcePath, relFile), "utf8");
   } catch {
     return null;
   }
