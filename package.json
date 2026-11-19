@@ -57,7 +57,7 @@
   },
   "dependencies": {
     "@abaplint/core": "^2.115.0",
-    "@huggingface/transformers": "^3.8.1",
+    "@huggingface/transformers": "^4.3.2",
     "@mixmark-io/domino": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.25.3",
     "better-sqlite3": "^12.2.0",
@@ -67,17 +67,17 @@
     "gray-matter": "^4.0.3",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.23",
-    "@types/node": "^20.11.19",
+    "@types/node": "^24.19.2",
     "@types/turndown": "^5.0.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.4",
-    "vitest": "^2.1.5"
+    "vitest": "^5.1.1"
   },
   "description": "Offline SAP documentation MCP server with unified local + online search",
   "homepage": "https://github.com/marianfoo/mcp-sap-docs#readme",
