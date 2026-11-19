@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import matter from 'gray-matter';
+import matter from './safe-matter.js';
 
 type TutorialConfig = {
   groups: Record<string, { name: string; keywords: string[]; tutorials: string[] }>;

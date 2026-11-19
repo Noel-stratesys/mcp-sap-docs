@@ -2,7 +2,7 @@
 import fg from "fast-glob";
 import fs from "fs/promises";
 import path, { join } from "path";
-import matter from "gray-matter";
+import matter from "./safe-matter.js";
 import { getAllowedSources, getVariantName } from "../src/lib/variant.js";
 import { materializeOpenUxGeneratedSources } from "./materialize-openux-generated.js";
 import { materializeTutorials, TUTORIALS } from "./materialize-tutorials.js";

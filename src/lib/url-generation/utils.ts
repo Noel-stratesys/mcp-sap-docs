@@ -3,7 +3,7 @@
  */
 
 import { chooseSourceAwareUrl, readSourceContentSync } from '../sourceContent.js';
-import matter from 'gray-matter';
+import matter from '../safeMatter.js';
 
 export interface FrontmatterData {
   id?: string;

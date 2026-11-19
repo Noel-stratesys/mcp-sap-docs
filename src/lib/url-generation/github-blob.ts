@@ -1,6 +1,6 @@
 import { BaseUrlGenerator, UrlGenerationContext } from './BaseUrlGenerator.js';
 import { detectContentSection, FrontmatterData } from './utils.js';
-import matter from 'gray-matter';
+import matter from '../safeMatter.js';
 
 function encodePath(path: string): string {
   return path
