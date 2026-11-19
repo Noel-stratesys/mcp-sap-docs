@@ -15,6 +15,7 @@ import { prefetchFeatureMatrix } from "./lib/softwareHeroes/abapFeatureMatrix.js
 import { prefetchReleasedObjects } from "./lib/sapReleasedObjects/index.js";
 import { prefetchUi5LibDiff } from "./lib/ui5LibDiff/index.js";
 import { loadEmbeddingModel } from "./lib/embeddingSearch.js";
+import { sanitizeExternalText, wrapText } from "./lib/untrustedContent.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -100,11 +101,13 @@ async function handleMCPRequest(content: string, options: UnifiedSearchOptions) 
     }
     
     // Format results with URL generation
+    // Each block is sanitised on its own so a truncated excerpt (e.g. an
+    // unterminated HTML comment) cannot swallow the following results.
     const formattedResults = results.map((r, index) => {
-      return formatSearchResult(r, CONFIG.EXCERPT_LENGTH_MAIN, {
+      return sanitizeExternalText(formatSearchResult(r, CONFIG.EXCERPT_LENGTH_MAIN, {
         generateDocumentationUrl,
         getDocUrlConfig
-      });
+      }));
     }).join('\n');
     
     const summary = `Found ${results.length} results for '${content}':\n\n${formattedResults}`;
@@ -116,7 +119,7 @@ async function handleMCPRequest(content: string, options: UnifiedSearchOptions) 
     try {
       const searchResult = await searchLibraries(content);
       if (searchResult.results.length > 0) {
-        return { role: "assistant", content: searchResult.results[0].description };
+        return { role: "assistant", content: sanitizeExternalText(searchResult.results[0].description ?? "") };
       }
       return {
         role: "assistant", 
@@ -309,7 +312,8 @@ const server = createServer(async (req, res) => {
       }
 
       const response = await handleMCPRequest(mcpRequest.content, options);
-      return json(res, 200, response);
+      // The summary embeds third-party documentation text: sanitise and fence it.
+      return json(res, 200, { ...response, content: wrapText(String(response.content ?? "")) });
     });
     return;
   }
