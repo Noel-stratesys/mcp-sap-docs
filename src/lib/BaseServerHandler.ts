@@ -365,6 +365,11 @@ ESCALATION: If search returns no useful results (especially for specific error m
                   type: "string",
                   description: "Optional SAP release filter, applied ONLY to online SAP Help (help.sap.com) — offline docs are unaffected. Omit it for the latest content (the right default for most queries). To pin an older release, copy a result's `versionId` value EXACTLY and pass it back here — it is case-sensitive and its format varies by product (e.g. '2025.001', '2.0.08', '10.0', '2211', 'Cloud', '2026_06'). Discover valid values in one step: run the same search WITHOUT version first; every result shows its `versionId`. Never invent, reformat, or guess the token (a bare year like '2025' is usually a different release). If a version matches nothing, the latest results are returned instead, so no results are lost."
                 },
+                includePassages: {
+                  type: "boolean",
+                  description: "Optional. When true, each offline result also carries `passages`: up to 3 best-matching passages (heading + text, about 1000 characters each) from the full document, best first. Default: false.",
+                  default: false
+                },
                 product: {
                   type: "string",
                   description: "Optional SAP Help product-id scope, applied ONLY to the online SAP Help leg (offline unaffected). Routes the online query to ONE product's docs — use it for FUNCTIONAL/configuration questions that `abapFlavor` cannot express (e.g. 'SAP_S4HANA_ON-PREMISE' for Asset Accounting, Grants, sales customizing). Takes precedence over the abapFlavor auto-mapping. DISCOVER valid values exactly like `version`: run the search once WITHOUT product and copy a result's `metadata.productId` EXACTLY — that is the scope facet, NOT `metadata.product`, which is the human display label (e.g. 'SAP S/4HANA') and will NOT filter. Never invent a slug (e.g. 'ABAP_PLATFORM' is wrong; the real facet is 'ABAP_PLATFORM_NEW'). An unknown product safely falls back to unscoped, so nothing is lost."
@@ -1185,8 +1190,10 @@ RETURNS (JSON):
           abapFlavor = 'auto',
           product,
           sources,
-          version
+          version,
+          includePassages = false
         } = args as {
+          includePassages?: boolean;
           query: string;
           k?: number;
           includeOnline?: boolean;
@@ -1278,6 +1285,7 @@ RETURNS (JSON):
               topic: topic,
               snippet: r.text ? r.text.substring(0, CONFIG.EXCERPT_LENGTH_MAIN) + '...' : '',
               score: r.finalScore,
+              ...(includePassages && r.passages?.length ? { passages: r.passages } : {}),
               metadata: {
                 source: r.sourceId || 'abap-docs',
                 sourceKind: r.sourceKind || 'offline',

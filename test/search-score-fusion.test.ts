@@ -23,6 +23,15 @@ vi.mock('../src/lib/metadata.js', () => ({
   expandQueryTerms: (query: string) => mocks.variants ?? [query],
 }));
 vi.mock('../src/lib/embeddingSearch.js', () => ({ buildSemanticResults: mocks.semantic }));
+// These tests cover the document-level fusion; the passage legs are off (no passage index).
+vi.mock('../src/lib/passages.js', () => ({
+  openPassagesDb: () => null,
+  searchPassagesLexical: () => [],
+  searchPassagesDense: async () => [],
+  getPassages: () => new Map(),
+  identifierClauses: () => [],
+  PASSAGE_CONFIG: { W_DOC: 1, W_LEX: 0, W_ID: 0, W_DENSE: 0 },
+}));
 vi.mock('../src/lib/sapHelp.js', () => ({ searchSapHelp: mocks.help, ABAP_HELP_PRODUCTS: {} }));
 vi.mock('../src/lib/localDocs.js', () => ({ searchCommunity: async () => ({ results: [] }) }));
 vi.mock('../src/lib/softwareHeroes/index.js', () => ({

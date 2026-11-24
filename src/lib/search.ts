@@ -7,6 +7,8 @@ import { searchCommunity } from "./localDocs.js";
 import { searchSoftwareHeroesContent } from "./softwareHeroes/index.js";
 import { SearchResponse, SearchResult as ApiSearchResult } from "./types.js";
 import { buildSemanticResults } from "./embeddingSearch.js";
+import { openDb } from "./searchDb.js";
+import { openPassagesDb, searchPassagesLexical, searchPassagesDense, getPassages, identifierClauses, PASSAGE_CONFIG, type PassageHit } from "./passages.js";
 
 export type SearchResult = {
   id: string;
@@ -17,6 +19,8 @@ export type SearchResult = {
   relFile: string;
   finalScore: number;
   sourceKind: 'offline' | 'sap_help' | 'sap_community' | 'software_heroes' | 'semantic';
+  /** Best matching passages of an offline document (passage search), best first. */
+  passages?: Array<{ heading: string; text: string }>;
   // Structured citation for online (SAP Help) hits — surfaced in the MCP search result
   // metadata so the agent can cite/dedup/verify the version without a fetch round-trip.
   citation?: {
@@ -549,65 +553,31 @@ export async function search(
   }
   
   let rows = Array.from(seen.values());
-  
-  // Filter by specific sources if provided
-  if (sourceFilters) {
-    rows = rows.filter(r => {
-      const sourceId = extractSourceId(r.libraryId || r.id);
-      return sourceFilters.has(sourceId);
-    });
-  }
-  
-  // Filter samples if not requested
-  if (!includeSamples) {
-    rows = rows.filter(r => {
-      const sourceId = extractSourceId(r.libraryId || r.id);
-      return !sampleSources.has(sourceId);
-    });
-  }
-  
-  // Filter out non-English variants of multi-language sources (e.g., CleanABAP_de)
-  // This keeps dsag-abap-leitfaden as it's unique content, not a translation duplicate
-  rows = rows.filter(r => {
-    const sourceId = extractSourceId(r.libraryId || r.id);
-    return !isNonEnglishVariant(r.id || '', sourceId);
-  });
-  
-  // Smart ABAP library filtering based on flavor
-  if (requestedAbapFlavor === 'cloud') {
-    // For cloud-specific queries, show cloud ABAP docs
-    rows = rows.filter(r => {
-      const id = r.id || '';
-      
-      // Keep all non-ABAP-docs sources (style guides, cheat sheets, samples, etc.)
-      if (!id.includes('/abap-docs-')) return true;
-      
-      // For ABAP docs, ONLY keep cloud library
-      return id.includes('/abap-docs-cloud/');
-    });
-    
-    console.log(`Filtered to ABAP Cloud: ${rows.length} results`);
-  } else {
-    // For standard ABAP queries, show standard (on-premise) ABAP docs
-    rows = rows.filter(r => {
-      const id = r.id || '';
-      
-      // Keep all non-ABAP-docs sources (style guides, cheat sheets, samples, etc.)
-      if (!id.includes('/abap-docs-')) return true;
-      
-      // For ABAP docs, ONLY keep standard library (default for on-premise)
-      return id.includes('/abap-docs-standard/');
-    });
-    
-    console.log(`Filtered to Standard ABAP (on-premise): ${rows.length} results`);
-  }
-  
+
+  // Row filters shared by the document-level and the passage-level legs.
+  const keepRow = (id: string, libraryId?: string): boolean => {
+    const sourceId = extractSourceId(libraryId || id);
+    if (sourceFilters && !sourceFilters.has(sourceId)) return false;
+    if (!includeSamples && sampleSources.has(sourceId)) return false;
+    // Filter out non-English variants of multi-language sources (e.g., CleanABAP_de)
+    // This keeps dsag-abap-leitfaden as it's unique content, not a translation duplicate
+    if (isNonEnglishVariant(id || '', sourceId)) return false;
+    // Smart ABAP library filtering based on flavor: cloud queries keep only the cloud
+    // keyword documentation, all other queries only the standard (on-premise) one.
+    if (!(id || '').includes('/abap-docs-')) return true;
+    return requestedAbapFlavor === 'cloud'
+      ? id.includes('/abap-docs-cloud/')
+      : id.includes('/abap-docs-standard/');
+  };
+  rows = rows.filter(r => keepRow(r.id || '', r.libraryId));
+  console.log(`Filtered to ${requestedAbapFlavor === 'cloud' ? 'ABAP Cloud' : 'Standard ABAP (on-premise)'}: ${rows.length} results`);
+
   // CRITICAL: Take more candidates BEFORE merging with online results
   // This prevents relevant offline docs from being hidden by the early slice
   
   // Convert offline results to consistent format with source boosts
   // Each result gets a rank-based RRF score plus boost multipliers
-  const offlineResults: SearchResult[] = rows.slice(0, OFFLINE_CANDIDATE_LIMIT).map((r, index) => {
+  const computeBoost = (r: { id: string; libraryId?: string; title?: string; text?: string; description?: string }): number => {
     const sourceId = extractSourceId(r.libraryId || r.id);
     let boost = sourceBoosts[sourceId] || 0;
     
@@ -729,6 +699,13 @@ export async function search(
       }
     }
     
+    return boost;
+  };
+
+  const offlineResults: SearchResult[] = rows.slice(0, OFFLINE_CANDIDATE_LIMIT).map((r, index) => {
+    const sourceId = extractSourceId(r.libraryId || r.id);
+    const boost = computeBoost(r);
+
     // Calculate RRF score based on BM25 rank (index)
     // rank is 1-based for RRF formula
     const rank = index + 1;
@@ -756,6 +733,11 @@ export async function search(
     };
   });
   
+  // Passage legs (full-text BM25 + dense) start now so the query embedding overlaps the online legs.
+  const passageLegsPromise = openPassagesDb()
+    ? runPassageLegs(query)
+    : Promise.resolve(null);
+
   // Optionally search online sources with timeout
   let onlineResults: SearchResult[] = [];
   
@@ -816,18 +798,24 @@ export async function search(
   }
   
   // Merge offline, semantic, and online results
-  // Semantic results re-rank BM25 candidates by cosine similarity and slot in via RRF
-  const semanticResults = await buildSemanticResults(query, offlineResults, k);
-  console.log(`🧠 [SEMANTIC] ${semanticResults.length} semantic results`);
+  const passageLegs = await passageLegsPromise;
+  let fusedOfflineResults: SearchResult[];
+  if (passageLegs) {
+    fusedOfflineResults = fusePassageLegs(offlineResults, passageLegs, keepRow, computeBoost);
+  } else {
+    // Semantic results re-rank BM25 candidates by cosine similarity and slot in via RRF
+    const semanticResults = await buildSemanticResults(query, offlineResults, k);
+    console.log(`🧠 [SEMANTIC] ${semanticResults.length} semantic results`);
 
-  // The semantic leg only re-ranks these offline candidates. Add its weighted
-  // RRF contribution once, applying the existing document boost to both legs.
-  // Taking the maximum during deduplication discarded the semantic score.
-  const semanticScores = new Map(semanticResults.map(result => [dedupeKey(result), result.finalScore]));
-  const fusedOfflineResults = offlineResults.map(result => ({
-    ...result,
-    finalScore: result.finalScore + (semanticScores.get(dedupeKey(result)) ?? 0) * (1 + (result.debug?.boost ?? 0))
-  }));
+    // The semantic leg only re-ranks these offline candidates. Add its weighted
+    // RRF contribution once, applying the existing document boost to both legs.
+    // Taking the maximum during deduplication discarded the semantic score.
+    const semanticScores = new Map(semanticResults.map(result => [dedupeKey(result), result.finalScore]));
+    fusedOfflineResults = offlineResults.map(result => ({
+      ...result,
+      finalScore: result.finalScore + (semanticScores.get(dedupeKey(result)) ?? 0) * (1 + (result.debug?.boost ?? 0))
+    }));
+  }
   const allResults = [...fusedOfflineResults, ...onlineResults];
   
   // Sort by final score (higher = better)
@@ -876,4 +864,122 @@ export async function search(
   return Array.from(contentDeduped.values())
     .sort((a, b) => b.finalScore - a.finalScore)
     .slice(0, k);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Passage-level fusion
+// ---------------------------------------------------------------------------------------------
+
+type DocInfo = { id: string; libraryId: string; title: string; description: string; relFile: string };
+let docInfo: Map<string, DocInfo> | null = null;
+
+/** id → title/description/relFile of every indexed document (loaded once from the FTS table). */
+function getDocInfo(): Map<string, DocInfo> {
+  if (!docInfo) {
+    docInfo = new Map();
+    const rows = openDb().prepare("SELECT id, libraryId, title, description, relFile FROM docs").all() as DocInfo[];
+    for (const r of rows) docInfo.set(r.id, r);
+  }
+  return docInfo;
+}
+
+type PassageLegs = { lexical: PassageHit[]; identifiers: PassageHit[]; dense: PassageHit[] };
+
+async function runPassageLegs(query: string): Promise<PassageLegs> {
+  const t0 = Date.now();
+  const lexical = searchPassagesLexical(query);
+  const ids = identifierClauses(query);
+  const identifiers = PASSAGE_CONFIG.W_ID > 0 && ids.length
+    ? searchPassagesLexical(query, PASSAGE_CONFIG.LEX_LIMIT, ids.join(" OR "))
+    : [];
+  const t1 = Date.now();
+  let dense: PassageHit[] = [];
+  if (PASSAGE_CONFIG.W_DENSE > 0) {
+    const hits = await searchPassagesDense(query);
+    const rows = getPassages(hits.map(h => h.pid));
+    dense = hits.flatMap(h => {
+      const r = rows.get(h.pid);
+      return r ? [{ ...r, score: h.score }] : [];
+    });
+  }
+  console.log(`📑 [PASSAGES] lexical ${lexical.length} (${t1 - t0}ms), dense ${dense.length} (${Date.now() - t1}ms)`);
+  return { lexical, identifiers, dense };
+}
+
+const parentId = (id: string) => id.split('#')[0];
+
+/**
+ * Fuse three offline rankings at document level (sections collapse into their document, so one
+ * document never takes several result slots):
+ *  - the existing document ranking (title/description/keyword BM25 with source/context boosts),
+ *  - BM25 over full-text passages,
+ *  - dense similarity over passages (multilingual model, when vectors are built).
+ * Score = existing finalScore + Σ w·RRF(rank)·(1 + boost), the same convention as the old semantic leg.
+ */
+function fusePassageLegs(
+  offlineResults: SearchResult[],
+  legs: PassageLegs,
+  keepRow: (id: string, libraryId?: string) => boolean,
+  computeBoost: (r: { id: string; libraryId?: string; title?: string; text?: string; description?: string }) => number
+): SearchResult[] {
+  const info = getDocInfo();
+  type Cand = { docScore: number; legScore: number; boost?: number; best?: SearchResult; passages: PassageHit[] };
+  const cands = new Map<string, Cand>();
+  const get = (id: string): Cand => {
+    let c = cands.get(id);
+    if (!c) { c = { docScore: 0, legScore: 0, passages: [] }; cands.set(id, c); }
+    return c;
+  };
+
+  // Leg 1: existing ranking, sections collapsed into their parent document (best score wins).
+  for (const r of offlineResults) {
+    const c = get(parentId(r.id));
+    if (r.finalScore > c.docScore) { c.docScore = r.finalScore; c.best = r; }
+  }
+
+  // Legs 2 and 3: passage rankings → document rankings by first (best) passage.
+  const addLeg = (hits: PassageHit[], weight: number) => {
+    if (weight <= 0) return;
+    let rank = 0;
+    const seenDocs = new Set<string>();
+    for (const h of hits) {
+      if (!keepRow(h.docId, h.libraryId)) continue;
+      const c = get(h.docId);
+      if (c.passages.length < 3 && !c.passages.some(p => p.pid === h.pid)) c.passages.push(h);
+      if (seenDocs.has(h.docId)) continue;
+      seenDocs.add(h.docId);
+      rank++;
+      if (c.boost === undefined) {
+        const d = info.get(h.docId);
+        c.boost = computeBoost({ id: h.docId, libraryId: h.libraryId, title: d?.title ?? h.title, description: d?.description ?? '' });
+      }
+      c.legScore += weight * rrf(rank) * (1 + c.boost);
+    }
+  };
+  addLeg(legs.lexical, PASSAGE_CONFIG.W_LEX);
+  addLeg(legs.identifiers, PASSAGE_CONFIG.W_ID);
+  addLeg(legs.dense, PASSAGE_CONFIG.W_DENSE);
+
+  const out: SearchResult[] = [];
+  for (const [id, c] of cands) {
+    const d = info.get(id);
+    const best = c.passages[0];
+    const title = d?.title || best?.title || c.best?.text.split('\n')[0] || id;
+    const snippetSource = best ? (best.heading && best.heading !== title ? `${best.heading}: ${best.body}` : best.body)
+      : (d?.description || c.best?.text.split('\n\n')[1] || '');
+    out.push({
+      id,
+      text: `${title}\n\n${snippetSource}\n\n${id}`,
+      bm25: c.best?.bm25 ?? 0,
+      sourceId: extractSourceId(d?.libraryId || id),
+      path: id,
+      relFile: d?.relFile || c.best?.relFile || '',
+      finalScore: PASSAGE_CONFIG.W_DOC * c.docScore + c.legScore,
+      sourceKind: 'offline',
+      passages: c.passages.map(p => ({ heading: p.heading, text: p.body })),
+      debug: { ...(c.best?.debug ?? {}), boost: c.boost ?? c.best?.debug?.boost },
+    });
+  }
+  return out;
 }
