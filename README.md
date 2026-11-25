@@ -194,6 +194,40 @@ Embeddings are stored in `docs.sqlite`, with the model cached in `dist/models/`.
 Old or partial embedding artifacts fall back to lexical ranking with a rebuild warning.
 See [docs/HYBRID-SEARCH.md](docs/HYBRID-SEARCH.md) for setup, limitations and costs.
 
+## Passage Search (fork `claude/busqueda-mejorada`)
+
+The document-level FTS index only covers title, description and keywords. When
+`dist/data/passages.sqlite` exists, `search` adds three offline legs and fuses them
+with the existing ranking by RRF (each weighted and multiplied by the usual source/context boost):
+
+- **Full-text BM25 over passages** (`npm run build:passages`): every document file is split
+  into heading-aware passages of about 1,000 characters; long documents are not truncated.
+  The query is an OR of content words without English or Spanish stopwords.
+- **Identifier leg**: only the technical names of the query (upper-case keyword runs such as
+  `FOR ALL ENTRIES`, dotted/underscored/hyphenated names, camelCase, annotations), which also
+  carries non-English questions.
+- **Dense leg** (optional, `npm run build:passage-embeddings`): passage vectors from any
+  OpenAI-compatible `/v1/embeddings` or Ollama `/api/embed` endpoint. With a multilingual model
+  (e.g. `multilingual-e5-small`) Spanish or German questions match English documentation.
+  Vectors live in `dist/data/passage-vectors.sqlite`, keyed by text hash and model, so the
+  job is resumable; passages are embedded by tier (1 = first passage of each document,
+  2 = first passage of each section, 3 = the rest).
+
+Sections collapse into their document (one result per document) and the snippet shows the best
+passage. New optional `search` parameter: `includePassages` (boolean, default `false`) adds up to
+three best-matching passages (`passages: [{heading, text}]`) to each offline result. Tool names and
+the other arguments are unchanged.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PASSAGE_SEARCH` | `on` | `off` restores the original ranking |
+| `PASSAGE_W_DOC`, `PASSAGE_W_LEX`, `PASSAGE_W_ID`, `PASSAGE_W_DENSE` | `1` | RRF weights of the four offline legs |
+| `PASSAGE_EMBED_URL` | `http://127.0.0.1:8099/v1/embeddings` | query/passage embedding endpoint |
+| `PASSAGE_EMBED_MODEL` | `multilingual-e5-small` | model name (also the vector cache key) |
+| `PASSAGE_EMBED_QUERY_PREFIX`, `PASSAGE_EMBED_DOC_PREFIX` | `query: `, `passage: ` | model prefixes (e5 style) |
+| `PASSAGE_DENSE_MAX_TIER` | `3` | use vectors of passages up to this tier |
+| `PASSAGE_EMBED_TIMEOUT_MS` | `8000` | query embedding timeout; on failure the dense leg is skipped |
+
 ## Offline-Only Mode
 
 `search` includes online sources by default. To run offline-only, use:
